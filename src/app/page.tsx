@@ -15,23 +15,88 @@ type TriviaQuestion = {
   incorrect_answers: string[];
 };
 
-type OpenTdbResponse = {
-  results: TriviaQuestion[];
+type QuizQuestion = TriviaQuestion & {
+  options: string[];
 };
 
 const QUESTION_COUNT = 5;
 
+const QUIZ_CATEGORIES = [
+  "musique",
+  "culture_generale",
+  "art_litterature",
+  "tv_cinema",
+  "actu_politique",
+  "sport",
+  "jeux_videos",
+  "histoire",
+  "geographie",
+  "science",
+  "gastronomie",
+] as const;
+
+const QUIZ_DIFFICULTIES = ["facile", "normal", "difficile"] as const;
+
+type QuizTuple = {
+  category: (typeof QUIZ_CATEGORIES)[number];
+  difficulty: (typeof QUIZ_DIFFICULTIES)[number];
+};
+
+const randomPick = <T,>(items: readonly T[]): T => {
+  return items[Math.floor(Math.random() * items.length)] as T;
+};
+
+const shuffle = <T,>(items: T[]): T[] => {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+};
+
+const buildRandomTuples = (count: number): QuizTuple[] => {
+  return Array.from({ length: count }, () => ({
+    category: randomPick(QUIZ_CATEGORIES),
+    difficulty: randomPick(QUIZ_DIFFICULTIES),
+  }));
+};
+
+const fetchOneQuiz = async (tuple: QuizTuple) => {
+  const res = await fetch(
+    `/api/quiz?limit=1&category=${tuple.category}&difficulty=${tuple.difficulty}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) throw new Error("quiz_fetch_failed");
+  const data = (await res.json()) as { results?: TriviaQuestion[] };
+  const q = data.results?.[0];
+  if (!q) return null;
+
+  const decodedCorrect = decodeHtml(q.correct_answer);
+  const decodedIncorrect = (q.incorrect_answers ?? []).map(decodeHtml);
+  const options = shuffle([decodedCorrect, ...decodedIncorrect]);
+
+  return {
+    ...q,
+    question: decodeHtml(q.question),
+    correct_answer: decodedCorrect,
+    incorrect_answers: decodedIncorrect,
+    options,
+  } satisfies QuizQuestion;
+};
+
 const getCategoryUi = (category: string) => {
-  if (category.includes("Geography")) return { badge: "bg-blue-600 text-white", label: "Géographie" };
-  if (category.includes("Entertainment"))
-    return { badge: "bg-pink-500 text-white", label: "Divertissement" };
-  if (category.includes("History")) return { badge: "bg-yellow-400 text-black", label: "Histoire" };
-  if (category.includes("Arts"))
-    return { badge: "bg-purple-600 text-white", label: "Arts & Littérature" };
-  if (category.includes("Science"))
-    return { badge: "bg-green-600 text-white", label: "Sciences & Nature" };
-  if (category.includes("Sports"))
-    return { badge: "bg-orange-500 text-white", label: "Sports & Loisirs" };
+  const c = category.toLowerCase();
+  if (c.includes("geographie")) return { badge: "bg-blue-600 text-white", label: "Géographie" };
+  if (c.includes("tv_cinema")) return { badge: "bg-pink-500 text-white", label: "TV & Cinéma" };
+  if (c.includes("histoire")) return { badge: "bg-yellow-400 text-black", label: "Histoire" };
+  if (c.includes("art_litterature")) return { badge: "bg-purple-600 text-white", label: "Arts & Littérature" };
+  if (c.includes("science")) return { badge: "bg-green-600 text-white", label: "Sciences" };
+  if (c.includes("sport")) return { badge: "bg-orange-500 text-white", label: "Sports" };
+  if (c.includes("musique")) return { badge: "bg-indigo-600 text-white", label: "Musique" };
+  if (c.includes("jeux_videos")) return { badge: "bg-cyan-600 text-white", label: "Jeux Vidéo" };
+  if (c.includes("actu_politique")) return { badge: "bg-rose-600 text-white", label: "Actu & Politique" };
+  if (c.includes("gastronomie")) return { badge: "bg-amber-600 text-white", label: "Gastronomie" };
   return { badge: "bg-slate-600 text-white", label: "Culture G" };
 };
 
@@ -43,33 +108,46 @@ const decodeHtml = (input: string) => {
 };
 
 export default function Home() {
-  const [questions, setQuestions] = useState<TriviaQuestion[]>([]);
+  const [questions, setQuestions] = useState<QuizQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [showAnswer, setShowAnswer] = useState(false);
+  const [selectedOption, setSelectedOption] = useState<string | null>(null);
+  const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
   const [score, setScore] = useState(0);
   const [isFinished, setIsFinished] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [sessionTuples, setSessionTuples] = useState<QuizTuple[]>([]);
 
   const fetchQuestions = useCallback(async () => {
     setIsLoading(true);
     try {
       setError(null);
 
-      const res = await fetch(
-        `https://opentdb.com/api.php?amount=${QUESTION_COUNT}&type=multiple`,
-        { cache: "no-store" },
-      );
-      const data: OpenTdbResponse = await res.json();
+      // 5 tuples aléatoires (catégorie, difficulté)
+      const tuples = buildRandomTuples(QUESTION_COUNT);
+      setSessionTuples(tuples);
 
-      const decodedQuestions = (data.results ?? []).map((q) => ({
-        ...q,
-        question: decodeHtml(q.question),
-        correct_answer: decodeHtml(q.correct_answer),
-        incorrect_answers: q.incorrect_answers.map(decodeHtml),
-      }));
+      // 1 quiz par tuple (requêtes en parallèle)
+      const fetched = await Promise.all(tuples.map(fetchOneQuiz));
+      const cleaned = fetched.filter((q): q is QuizQuestion => q !== null);
 
-      setQuestions(decodedQuestions);
+      // Si l'API renvoie moins d'items (rare), on complète avec quelques tuples supplémentaires
+      if (cleaned.length < QUESTION_COUNT) {
+        const missing = QUESTION_COUNT - cleaned.length;
+        const extraTuples = buildRandomTuples(missing);
+        setSessionTuples((prev) => [...prev, ...extraTuples]);
+        const extraFetched = await Promise.all(extraTuples.map(fetchOneQuiz));
+        const extraCleaned = extraFetched.filter((q): q is QuizQuestion => q !== null);
+        setQuestions(shuffle([...cleaned, ...extraCleaned]).slice(0, QUESTION_COUNT));
+      } else {
+        setQuestions(shuffle(cleaned).slice(0, QUESTION_COUNT));
+      }
+
+      setCurrentIndex(0);
+      setSelectedOption(null);
+      setIsCorrect(null);
+      setIsFinished(false);
+      setScore(0);
     } catch (e) {
       console.error("Erreur chargement questions:", e);
       setError("Impossible de charger les questions. Réessaie.");
@@ -86,12 +164,11 @@ export default function Home() {
     return () => clearTimeout(t);
   }, [fetchQuestions]);
 
-  const handleNext = (wasCorrect: boolean) => {
-    if (wasCorrect) setScore(score + 1);
-
+  const handleNext = () => {
     if (currentIndex < QUESTION_COUNT - 1) {
       setCurrentIndex(currentIndex + 1);
-      setShowAnswer(false);
+      setSelectedOption(null);
+      setIsCorrect(null);
     } else {
       setIsFinished(true);
     }
@@ -99,7 +176,8 @@ export default function Home() {
 
   const resetGame = () => {
     setCurrentIndex(0);
-    setShowAnswer(false);
+    setSelectedOption(null);
+    setIsCorrect(null);
     setScore(0);
     setIsFinished(false);
     void fetchQuestions();
@@ -111,7 +189,7 @@ export default function Home() {
   }, [currentIndex]);
 
   const metaLine = useMemo(() => {
-    return `Question ${currentIndex + 1} / ${QUESTION_COUNT} · Score ${score}`;
+    return `Question ${currentIndex + 1} / ${QUESTION_COUNT} · Score ${score} · Aléatoire`;
   }, [currentIndex, score]);
 
   if (isLoading) {
@@ -227,6 +305,17 @@ export default function Home() {
 
   const currentQ = questions[currentIndex];
   const category = getCategoryUi(currentQ.category);
+  const sessionModeLabel = sessionTuples.length > 0 ? "Mix" : "Aléatoire";
+
+  const hasAnswered = selectedOption !== null;
+
+  const onPickOption = (option: string) => {
+    if (hasAnswered) return;
+    const ok = option === currentQ.correct_answer;
+    setSelectedOption(option);
+    setIsCorrect(ok);
+    if (ok) setScore((s) => s + 1);
+  };
 
   return (
     <main className="min-h-svh px-4 py-10 flex items-center justify-center">
@@ -240,7 +329,7 @@ export default function Home() {
             </div>
           </div>
           <div className="text-xs font-bold px-3 py-1 rounded-full border" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-            Mode Solo
+            {sessionModeLabel}
           </div>
         </div>
 
@@ -277,69 +366,83 @@ export default function Home() {
               {currentQ.question}
             </p>
 
-            {showAnswer ? (
-              <div className="mt-7 animate-in fade-in zoom-in duration-300">
+            <div className="mt-7 grid grid-cols-2 gap-3">
+              {currentQ.options.map((option) => {
+                const isSelected = selectedOption === option;
+                const isRight = option === currentQ.correct_answer;
+                const showState = hasAnswered;
+
+                const borderColor = showState
+                  ? isRight
+                    ? "color-mix(in oklab, var(--success) 45%, var(--border))"
+                    : isSelected
+                      ? "color-mix(in oklab, var(--danger) 45%, var(--border))"
+                      : "var(--border)"
+                  : "var(--border)";
+
+                const background = showState
+                  ? isRight
+                    ? "color-mix(in oklab, var(--success) 10%, transparent)"
+                    : isSelected
+                      ? "color-mix(in oklab, var(--danger) 10%, transparent)"
+                      : "transparent"
+                  : "transparent";
+
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => onPickOption(option)}
+                    disabled={hasAnswered}
+                    className="w-full h-full rounded-2xl px-4 py-4 font-bold transition-colors border text-left focus:outline-none focus:ring-4 disabled:opacity-95"
+                    style={{ borderColor, background, outlineColor: "var(--ring)", color: "var(--text)" }}
+                  >
+                    <span className="flex items-center justify-between gap-3">
+                      <span className="leading-snug">{option}</span>
+                      {showState && isRight && <CheckCircle2 size={20} color="var(--success)" />}
+                      {showState && isSelected && !isRight && <XCircle size={20} color="var(--danger)" />}
+                      {!showState && <ChevronRight size={18} style={{ color: "var(--muted)" }} />}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {hasAnswered && (
+              <div className="mt-5">
                 <div
-                  className="p-5 rounded-2xl border text-center"
+                  className="p-4 rounded-2xl border text-center"
                   style={{
-                    borderColor: "color-mix(in oklab, var(--success) 35%, var(--border))",
-                    background: "color-mix(in oklab, var(--success) 10%, transparent)",
+                    borderColor:
+                      isCorrect === true
+                        ? "color-mix(in oklab, var(--success) 35%, var(--border))"
+                        : "color-mix(in oklab, var(--danger) 35%, var(--border))",
+                    background:
+                      isCorrect === true
+                        ? "color-mix(in oklab, var(--success) 10%, transparent)"
+                        : "color-mix(in oklab, var(--danger) 10%, transparent)",
+                    color: "var(--text)",
                   }}
                 >
-                  <span className="text-xs font-black tracking-widest uppercase" style={{ color: "color-mix(in oklab, var(--success) 80%, var(--text))" }}>
-                    La réponse
+                  <span className="text-sm font-black tracking-widest uppercase" style={{ color: "var(--muted)" }}>
+                    {isCorrect ? "Bonne réponse" : "Mauvaise réponse"}
                   </span>
-                  <div
-                    className="mt-2 text-2xl font-black"
-                    style={{ color: "var(--text)" }}
-                  >
-                    {currentQ.correct_answer}
-                  </div>
                 </div>
 
-                <div className="mt-5 grid grid-cols-2 gap-3">
-                  <button
-                    onClick={() => handleNext(false)}
-                    className="rounded-2xl px-4 py-4 font-bold transition-colors border focus:outline-none focus:ring-4"
-                    style={{
-                      borderColor: "color-mix(in oklab, var(--danger) 35%, var(--border))",
-                      background: "color-mix(in oklab, var(--danger) 10%, transparent)",
-                      outlineColor: "var(--ring)",
-                    }}
-                  >
-                    <span className="inline-flex items-center justify-center gap-2" style={{ color: "color-mix(in oklab, var(--danger) 85%, var(--text))" }}>
-                      <XCircle size={20} /> Raté
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => handleNext(true)}
-                    className="rounded-2xl px-4 py-4 font-bold transition-colors text-white focus:outline-none focus:ring-4"
-                    style={{
-                      background: "var(--success)",
-                      boxShadow: "0 14px 30px rgba(34, 197, 94, 0.25)",
-                      outlineColor: "var(--ring)",
-                    }}
-                  >
-                    <span className="inline-flex items-center justify-center gap-2">
-                      <CheckCircle2 size={20} /> Bien vu
-                    </span>
-                  </button>
-                </div>
+                <button
+                  onClick={handleNext}
+                  className="mt-4 w-full rounded-2xl px-5 py-5 font-bold transition-colors text-white focus:outline-none focus:ring-4"
+                  style={{
+                    background: "var(--brand)",
+                    boxShadow: "0 16px 40px rgba(99, 102, 241, 0.25)",
+                    outlineColor: "var(--ring)",
+                  }}
+                >
+                  <span className="inline-flex items-center justify-center gap-2">
+                    {currentIndex < QUESTION_COUNT - 1 ? "Question suivante" : "Terminer"} <ChevronRight size={20} />
+                  </span>
+                </button>
               </div>
-            ) : (
-              <button
-                onClick={() => setShowAnswer(true)}
-                className="w-full mt-8 rounded-2xl px-5 py-5 font-bold transition-colors text-white focus:outline-none focus:ring-4"
-                style={{
-                  background: "var(--brand)",
-                  boxShadow: "0 16px 40px rgba(99, 102, 241, 0.25)",
-                  outlineColor: "var(--ring)",
-                }}
-              >
-                <span className="inline-flex items-center justify-center gap-2">
-                  Révéler la réponse <ChevronRight size={20} />
-                </span>
-              </button>
             )}
           </div>
         </div>
