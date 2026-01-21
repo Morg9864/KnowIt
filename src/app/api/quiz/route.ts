@@ -48,7 +48,9 @@ export async function GET(request: Request) {
 		const data = (await res.json()) as QuizzApiResponse;
 
 		const results = (data.quizzes ?? []).map(q => ({
+			id: q._id,
 			category: q.category,
+			difficulty: q.difficulty,
 			question: q.question,
 			correct_answer: q.answer,
 			incorrect_answers: q.badAnswers ?? [],
