@@ -24,6 +24,12 @@ Source des questions : **QuizzAPI** (données en français).
 1. Le client génère 5 couples _(catégorie, difficulté)_ au hasard.
 2. Pour chaque couple, il demande **1 question** à l’API interne du site, qui elle-même interroge QuizzAPI.
 
+## Navigation
+
+- `/` : écran d’accueil (choix **Jouer** / **Revoir**)
+- `/play` : le quiz (session de 5 QCM)
+- `/review` : liste des questions répondues juste (cache local)
+
 ## Stack (pour les devs)
 
 - **Next.js 16** (App Router)
@@ -35,7 +41,10 @@ Source des questions : **QuizzAPI** (données en français).
 
 Le front ne parle pas directement à QuizzAPI : on passe par une route Next.js côté serveur.
 
-- UI + logique du quiz : [src/app/page.tsx](src/app/page.tsx)
+- Accueil : [src/app/page.tsx](src/app/page.tsx)
+- UI + logique du quiz : [src/app/play/page.tsx](src/app/play/page.tsx)
+- Revoir (liste des bonnes réponses) : [src/app/review/page.tsx](src/app/review/page.tsx)
+- Cache local (localStorage) : [src/lib/quizCache.ts](src/lib/quizCache.ts)
 - Proxy API (QuizzAPI → format “trivia”) : [src/app/api/quiz/route.ts](src/app/api/quiz/route.ts)
 
 ### Route API : `/api/quiz`
@@ -56,7 +65,9 @@ Réponse (format simplifié) :
 {
 	"results": [
 		{
+			"id": "...",
 			"category": "geographie",
+			"difficulty": "facile",
 			"question": "...",
 			"correct_answer": "...",
 			"incorrect_answers": ["...", "...", "..."]
@@ -68,6 +79,14 @@ Réponse (format simplifié) :
 ## Design / UI
 
 - Le thème repose sur des **variables CSS** (tokens) définies dans [src/app/globals.css](src/app/globals.css).
+
+## Cache local (bonnes réponses)
+
+Quand tu réponds **juste**, la question est sauvegardée en **localStorage** (sur ton navigateur) pour pouvoir la retrouver dans `/review`.
+
+- Stockage : `localStorage` (clé `knowit.correctQuestions.v1`)
+- Dédoublonnage : par `id` (si fourni) sinon par empreinte
+- Limite : 200 items
 
 ## Lancer en local
 
@@ -93,8 +112,11 @@ pnpm start
 
 ## Structure du projet
 
-- [src/app/page.tsx](src/app/page.tsx) : écran principal (client) + logique QCM
+- [src/app/page.tsx](src/app/page.tsx) : écran d’accueil
+- [src/app/play/page.tsx](src/app/play/page.tsx) : quiz (client) + logique QCM
+- [src/app/review/page.tsx](src/app/review/page.tsx) : écran “Revoir” (liste cache)
 - [src/app/api/quiz/route.ts](src/app/api/quiz/route.ts) : proxy QuizzAPI
+- [src/lib/quizCache.ts](src/lib/quizCache.ts) : lecture/écriture du cache localStorage
 - [src/app/globals.css](src/app/globals.css) : tokens + styles globaux
 - [public/manifest.json](public/manifest.json) : manifest (base PWA)
 
